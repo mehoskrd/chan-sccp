@@ -2506,7 +2506,7 @@ void handle_hookflash(constSessionPtr s, devicePtr d, constMessagePtr msg_in)
 			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: (HookFlash) Line could not be found for lineInstance:%d\n", d->id, lineInstance);
 		}
 	} else {
-		sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: (HookFlash) Either lineInstance:%d or CallId:%d not provided\n", d->id);
+		sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: (HookFlash) Either lineInstance:%d or CallId:%d not provided\n", d->id, lineInstance, callid);
 		sccp_dump_msg(msg_in);
 	}
 }
@@ -2943,6 +2943,8 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 		SCCP_CILI_HAS_LINEINSTANCE,
 	}; 
 
+	sccp_dump_msg(msg_in);
+
 	int digit = letohl(msg_in->data.KeypadButtonMessage.lel_kpButton);
 	switch (digit) {
 		case 0 ... 9:
@@ -2970,22 +2972,22 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 	uint8_t CallIdAndLineInstance = SCCP_CILI_HAS_NEITHER;
 	uint8_t lineInstance = 0;
 	uint32_t callid = 0;
-	/* get callid and lineInstance if available. set bitfield accordingly */
-	if (msg_in->header.length >= 20) {
+	if (msg_in->header.length >= 16) {									/* get callid and lineInstance if available. set bitfield accordingly */
 		lineInstance = letohl(msg_in->data.KeypadButtonMessage.lel_lineInstance);
 		CallIdAndLineInstance |= lineInstance ? SCCP_CILI_HAS_LINEINSTANCE : 0;
-	}
-	if (msg_in->header.length >= 16) {
-		callid = letohl(msg_in->data.KeypadButtonMessage.lel_callReference);
-		CallIdAndLineInstance |= callid ? SCCP_CILI_HAS_CALLID : 0;
+		if (msg_in->header.length >= 20) {
+			callid = letohl(msg_in->data.KeypadButtonMessage.lel_callReference);
+			CallIdAndLineInstance |= callid ? SCCP_CILI_HAS_CALLID : 0;
+		}
 	}
 
 	/* old devices (like 7906) send buttonIndex instead of lineInstance, convert buttonIndex to lineInstance */
-	if (d->protocolversion < 15 && lineInstance) {
+	if (d->protocolversion < 15 && (CallIdAndLineInstance & SCCP_CILI_HAS_LINEINSTANCE)) {
 		int16_t tmpLineInstance, buttonIndex = lineInstance;
 		if ((tmpLineInstance = sccp_device_buttonIndex2lineInstance(d, buttonIndex)) >= 0) {
 			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) digit:%08x, callid:%d, buttonIndex:%d => lineInstance:%d\n", DEV_ID_LOG(d), digit, callid, buttonIndex, tmpLineInstance);
 			lineInstance = tmpLineInstance;
+			CallIdAndLineInstance |= lineInstance ? SCCP_CILI_HAS_LINEINSTANCE : 0;
 		}
 	}
 	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) digit:%08x, callid:%d, lineInstance:%d\n", DEV_ID_LOG(d), digit, callid, lineInstance);
@@ -2994,13 +2996,13 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 	AUTO_RELEASE(sccp_line_t, l , NULL);
 	switch(CallIdAndLineInstance) {
 		case SCCP_CILI_HAS_CALLID | SCCP_CILI_HAS_LINEINSTANCE:
-			//sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) BOTH callid and lineinstance\n", DEV_ID_LOG(d));
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) BOTH callid and lineinstance\n", DEV_ID_LOG(d));
 			if ((channel = sccp_find_channel_by_lineInstance_and_callid(d, lineInstance, callid))) {
 				break;
 			}
 			// fallthrough to lineInstance only method (channel could not be found on lineInstance), reported in issue #340
 		case SCCP_CILI_HAS_LINEINSTANCE:
-			//sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) only lineinstance\n", DEV_ID_LOG(d));
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) only lineinstance\n", DEV_ID_LOG(d));
 			if ((l = sccp_line_find_byid(d, lineInstance))) {
 				SCCP_LIST_LOCK(&l->channels);
 				channel = SCCP_LIST_FIND(&l->channels, sccp_channel_t, tmpc, list, (tmpc->state == SCCP_CHANNELSTATE_OFFHOOK || tmpc->state == SCCP_CHANNELSTATE_GETDIGITS || tmpc->state == SCCP_CHANNELSTATE_DIGITSFOLL), TRUE, __FILE__, __LINE__, __PRETTY_FUNCTION__);
@@ -3008,12 +3010,12 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 			}
 			break;
 		case SCCP_CILI_HAS_CALLID:
-			//sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) only callid\n", DEV_ID_LOG(d));
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) only callid\n", DEV_ID_LOG(d));
 			channel = sccp_channel_find_byid(callid);
 			break;
 		case SCCP_CILI_HAS_NEITHER:
 			/* Old phones like 7912 never uses callid so we would have trouble finding the right channel */
-			//sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) has neither, using activeLine and activeChannel\n", DEV_ID_LOG(d));
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) has neither, using activeLine and activeChannel\n", DEV_ID_LOG(d));
 			channel = sccp_device_getActiveChannel(d);
 			break;
 	}
@@ -3334,20 +3336,15 @@ void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessag
 		}
 		return;
 	}
-	if (channel && channel->state != SCCP_CHANNELSTATE_ONHOOK) {
-		if (channel->state == SCCP_CHANNELSTATE_INVALIDNUMBER) {
-			pbx_log(LOG_WARNING, "%s: (OpenReceiveChannelAck) Invalid Number (%d)\n", DEV_ID_LOG(d), channel->state);
-			return;
-		}
-		if (channel->state == SCCP_CHANNELSTATE_DOWN) {
-			pbx_log(LOG_WARNING, "%s: (OpenReceiveChannelAck) Channel is down. Giving up... (%d)\n", DEV_ID_LOG(d), channel->state);
-			sccp_msg_t *r = NULL;
-
-			REQ(r, CloseReceiveChannel);
-			r->data.CloseReceiveChannel.lel_conferenceId = htolel(callReference);
-			r->data.CloseReceiveChannel.lel_passThruPartyId = htolel(passThruPartyId);
-			r->data.CloseReceiveChannel.lel_callReference = htolel(callReference);
-			sccp_dev_send(d, r);
+	if (channel) {
+		if (channel->state == SCCP_CHANNELSTATE_DOWN || channel->state == SCCP_CHANNELSTATE_ONHOOK || channel->state == SCCP_CHANNELSTATE_INVALIDNUMBER) {
+			if (channel->state == SCCP_CHANNELSTATE_INVALIDNUMBER) {
+				pbx_log(LOG_NOTICE, "%s: (OpenReceiveChannelAck) Invalid Number (%s)\n", DEV_ID_LOG(d), sccp_channelstate2str(channel->state));
+				sccp_indicate(d, channel, SCCP_CHANNELSTATE_INVALIDNUMBER);
+			} else {
+				pbx_log(LOG_NOTICE, "%s: (OpenReceiveChannelAck) Channel is onhook/down. Giving up... (%s)\n", DEV_ID_LOG(d), sccp_channelstate2str(channel->state));
+				sccp_channel_endcall(channel);
+			}
 			return;
 		}
 
@@ -3381,11 +3378,14 @@ void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessag
 	} else {
 		/* we successfully opened receive channel, but have no channel active -> close receive */
 		int32_t callId = passThruPartyId ^ 0xFFFFFFFF;
+		sccp_log(DEBUGCAT_RTP) (VERBOSE_PREFIX_3 "%s: (OpenReceiveChannelAck) No channel with this PassThruPartyId %u (callReference: %d, callid: %d). Channel has already been hungup or closed.\n", d->id, passThruPartyId, callReference, callId);
 
-		pbx_log(LOG_ERROR, "%s: (OpenReceiveChannelAck) No channel with this PassThruPartyId %u (callReference: %d, callid: %d)!\n", d->id, passThruPartyId, callReference, callId);
-		if (channel) {
-			sccp_channel_closeReceiveChannel(channel, FALSE);
-		}
+		sccp_msg_t *r = NULL;
+		REQ(r, CloseReceiveChannel);
+		r->data.CloseReceiveChannel.lel_conferenceId = htolel(callReference);
+		r->data.CloseReceiveChannel.lel_passThruPartyId = htolel(passThruPartyId);
+		r->data.CloseReceiveChannel.lel_callReference = htolel(callReference);
+		sccp_dev_send(d, r);
 	}
 }
 
