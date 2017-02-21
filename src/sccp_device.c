@@ -380,9 +380,9 @@ boolean_t sccp_device_check_update(devicePtr device)
 				d->pendingUpdate = 0;
 				if (d->pendingDelete) {
 					sccp_log((DEBUGCAT_CONFIG + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Remove Device from List\n", d->id);
-					sccp_dev_clean(d, TRUE);
+					sccp_dev_clean_restart(d, TRUE);
 				} else {
-					sccp_dev_clean(d, FALSE);
+					sccp_dev_clean_restart(d, FALSE);
 				}
 				res = TRUE;
 			} while (0);
@@ -613,6 +613,7 @@ sccp_device_t *sccp_device_create(const char *id)
 	d->pushURL = sccp_device_pushURLNotSupported;
 	d->pushTextMessage = sccp_device_pushTextMessageNotSupported;
 	d->checkACL = sccp_device_checkACL;
+	d->useHookFlash = sccp_device_falseResult;
 	d->hasDisplayPrompt = sccp_device_trueResult;
 	d->hasEnhancedIconMenuSupport = sccp_device_falseResult;
 	d->setBackgroundImage = sccp_device_setBackgroundImageNotSupported;
@@ -1036,6 +1037,7 @@ uint8_t sccp_dev_build_buttontemplate(devicePtr d, btnlist * btn)
 		case SKINNY_DEVICETYPE_ANALOG_GATEWAY:
 			btn[btn_index++].type = SCCP_BUTTONTYPE_LINE;
 			d->hasDisplayPrompt = sccp_device_falseResult;
+			d->useHookFlash = sccp_device_trueResult;
 			break;
 		case SKINNY_DEVICETYPE_ATA188:
 		case SKINNY_DEVICETYPE_ATA186:
@@ -1045,6 +1047,7 @@ uint8_t sccp_dev_build_buttontemplate(devicePtr d, btnlist * btn)
 				btn[btn_index++].type = SCCP_BUTTONTYPE_SPEEDDIAL;
 			}
 			d->hasDisplayPrompt = sccp_device_falseResult;
+			d->useHookFlash = sccp_device_trueResult;
 			break;
 		case SKINNY_DEVICETYPE_CISCO8941:
 		case SKINNY_DEVICETYPE_CISCO8945:
@@ -1121,6 +1124,10 @@ uint8_t sccp_dev_build_buttontemplate(devicePtr d, btnlist * btn)
 			}
 			break;
 		case SKINNY_DEVICETYPE_CISCO6901:
+			d->useHookFlash = sccp_device_trueResult;
+			d->hasDisplayPrompt = sccp_device_falseResult;
+			btn[btn_index++].type = SCCP_BUTTONTYPE_MULTI;
+			break;
 		case SKINNY_DEVICETYPE_CISCO6911:
 			d->hasDisplayPrompt = sccp_device_falseResult;
 			btn[btn_index++].type = SCCP_BUTTONTYPE_MULTI;
@@ -1403,6 +1410,25 @@ void sccp_dev_set_speaker(constDevicePtr d, uint8_t mode)
 	msg->data.SetSpeakerModeMessage.lel_speakerMode = htolel(mode);
 	sccp_dev_send(d, msg);
 	sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Send speaker mode '%s'\n", d->id, (mode == SKINNY_STATIONSPEAKER_ON ? "on" : (mode == SKINNY_STATIONSPEAKER_OFF ? "off" : "unknown")));
+}
+
+/*!
+ * \brief Set HookFlash Detect
+ * \param d SCCP Device
+ */
+static void sccp_dev_setHookFlashDetect(constDevicePtr d)
+{
+	sccp_msg_t *msg = NULL;
+
+	if (!d || !d->session || !d->protocol || !d->useHookFlash()) {
+		return;												/* only for old phones */
+	}
+	REQ(msg, SetHookFlashDetectMessage);
+	if (!msg) {
+		return;
+	}
+	sccp_dev_send(d, msg);
+	sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Enabled HookFlashDetect\n", d->id);
 }
 
 /*!
@@ -2165,6 +2191,9 @@ void sccp_dev_postregistration(void *data)
 	}
 	SCCP_LIST_UNLOCK(&d->buttonconfig);
 #endif
+	if (d->useHookFlash()) {
+		sccp_dev_setHookFlashDetect(d);
+	}
 	sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Post registration process... done!\n", d->id);
 	return;
 }
@@ -2232,7 +2261,7 @@ static void sccp_buttonconfig_destroy(sccp_buttonconfig_t *buttonconfig)
  *
  * \note adds a retained device to the event.deviceRegistered.device
  */
-void sccp_dev_clean(devicePtr device, boolean_t remove_from_global)
+void _sccp_dev_clean(devicePtr device, boolean_t remove_from_global, boolean_t restart_device)
 {
 	AUTO_RELEASE(sccp_device_t, d , sccp_device_retain(device));
 	sccp_buttonconfig_t *config = NULL;
@@ -2247,7 +2276,7 @@ void sccp_dev_clean(devicePtr device, boolean_t remove_from_global)
 
 	if (d) {
 		sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_1 "SCCP: Clean Device %s\n", d->id);
-		sccp_dev_set_registered(d, SKINNY_DEVICE_RS_CLEANING);						/* set correct register state */
+		sccp_device_setRegistrationState(d, SKINNY_DEVICE_RS_CLEANING);
 		if (remove_from_global) {
 			sccp_device_removeFromGlobals(d);
 		}
@@ -2367,22 +2396,19 @@ void sccp_dev_clean(devicePtr device, boolean_t remove_from_global)
 		}
 		SCCP_LIST_UNLOCK(&d->devstateSpecifiers);
 #endif
-		//sccp_dev_set_registered(d, SKINNY_DEVICE_RS_NONE);                                              /* set correct register state */
-		//{
-		//	sccp_session_t * volatile s = d->session;						/* make sure we reread d->session */
-		//	d->session = NULL;
-		//	if (s) {										/* session could have dissolved, use volatile pointer */
-		//		sccp_session_releaseDevice(s);							/* implicit release */
-		//		sccp_session_stopthread(s, SKINNY_DEVICE_RS_NONE);
-		//	}
-		//}
-		if (d->session) {
-			sccp_device_sendReset(d, SKINNY_DEVICE_RESTART);
-			d->session = NULL;
-			sccp_session_releaseDevice(d->session);                                                 /* implicit release */
-			sccp_session_stopthread(d->session, SKINNY_DEVICE_RS_NONE);
+		sccp_session_t *s = d->session;
+		if (s) {
+			if (restart_device) {
+				sccp_device_sendReset(d, SKINNY_DEVICE_RESTART);
+				sccp_safe_sleep(100);
+			} else {
+				sccp_session_releaseDevice(s);
+				d->session = NULL;
+				sccp_session_stopthread(s, SKINNY_DEVICE_RS_NONE);
+			}
+		} else {
+			sccp_device_setRegistrationState(d, SKINNY_DEVICE_RS_NONE);
 		}
-
 #if CS_REFCOUNT_DEBUG
 		if (remove_from_global) {
 			pbx_str_t *buf = pbx_str_create(DEFAULT_PBX_STR_BUFFERSIZE);
@@ -2615,6 +2641,7 @@ int sccp_device_sendReset(devicePtr d, uint8_t reset_type)
 
 	msg->data.Reset.lel_resetType = htolel(reset_type);
 	sccp_session_send(d, msg);
+
 	d->pendingUpdate = 0;
 	return 1;
 }

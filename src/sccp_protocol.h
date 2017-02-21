@@ -234,7 +234,7 @@ typedef enum {
 	// ??
 	SetRingerMessage 				= 0x0085,
 	SetLampMessage 					= 0x0086,
-	SetHkFDetectMessage 				= 0x0087,
+	SetHookFlashDetectMessage 			= 0x0087,
 	SetSpeakerModeMessage 				= 0x0088,
 	SetMicroModeMessage 				= 0x0089,
 	StartMediaTransmission 				= 0x008A,
@@ -282,7 +282,7 @@ typedef enum {
 	ActivateCallPlaneMessage 			= 0x0116,
 	DeactivateCallPlaneMessage 			= 0x0117,
 	UnregisterAckMessage 				= 0x0118,
-	BackSpaceReqMessage 				= 0x0119,
+	BackSpaceResMessage 				= 0x0119,
 	RegisterTokenAck 				= 0x011A,
 	RegisterTokenReject 				= 0x011B,
 	StartMediaFailureDetection 			= 0x011C,
@@ -1559,7 +1559,7 @@ typedef union {
 	} ConfigStatDynamicMessage;										/*!< Configuration Status Message - Server -> Client */
 
 	struct {
-		uint32_t les_rtpMediaPort;									/*!< RTP Media Port */
+		uint32_t lel_rtpMediaPort;									/*!< RTP Media Port */
 	} IpPortMessage;											/*!< Ip Port Message - Superseded by including the IP Port info in the OpenReceiveChannelAck Message  */
 
 	struct {
@@ -2000,7 +2000,7 @@ typedef union {
 	} SetLampMessage;											/*!< Set Lamp Message Structure */
 
 	struct {
-	} SetHkFDetectMessage;											/*!< Set Hkf Detect Message Structure */
+	} SetHookFlashDetectMessage;											/*!< Set Hkf Detect Message Structure */
 
 	struct {
 		uint32_t lel_speakerMode;									/*!< Spreaker Mode */
@@ -2806,7 +2806,7 @@ typedef union {
 	struct {
 		uint32_t lel_lineInstance;									/*!< Line Instance */
 		uint32_t lel_callReference;									/*!< Call Reference */
-	} BackSpaceReqMessage;											/*!< Back Space Request Message Message Structure */
+	} BackSpaceResMessage;											/*!< Back Space Request Message Message Structure */
 
 	struct {
 	} RegisterTokenAck;											/*!< Register Token Ackknowledge Message Structure */

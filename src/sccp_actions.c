@@ -74,6 +74,7 @@ void handle_port_response(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessagePtr msg_in)		__NONNULL(1,2,3);
 void handle_OpenMultiMediaReceiveAck(constSessionPtr s, devicePtr d, constMessagePtr msg_in)		__NONNULL(1,2,3);
 void handle_ConnectionStatistics(constSessionPtr s, devicePtr device, constMessagePtr msg_in)		__NONNULL(1,2,3);
+void handle_ipport(constSessionPtr s, devicePtr d, constMessagePtr msg_in)				__NONNULL(1,2,3);
 void handle_version(constSessionPtr s, devicePtr d, constMessagePtr msg_in)				__NONNULL(1,2,3);
 void handle_ServerResMessage(constSessionPtr s, devicePtr d, constMessagePtr msg_in)			__NONNULL(1,2,3);
 void handle_ConfigStatMessage(constSessionPtr s, devicePtr d, constMessagePtr msg_in)			__NONNULL(1,2,3);
@@ -153,7 +154,7 @@ static const struct messageMap_cb sccpMessagesCbMap[SCCP_MESSAGE_HIGH_BOUNDARY +
 	[OpenReceiveChannelAck] = {handle_open_receive_channel_ack, TRUE},
 	[OpenMultiMediaReceiveChannelAckMessage] = {handle_OpenMultiMediaReceiveAck, TRUE},
 	[StartMediaTransmissionAck] = {handle_startmediatransmission_ack, TRUE},
-	[IpPortMessage] = {NULL, TRUE},
+	[IpPortMessage] = {handle_ipport, TRUE},
 	[VersionReqMessage] = {handle_version, TRUE},
 	[CapabilitiesResMessage] = {handle_capabilities_res, TRUE},
 	[ButtonTemplateReqMessage] = {sccp_handle_button_template_req, TRUE},
@@ -268,12 +269,12 @@ void sccp_handle_backspace(constDevicePtr d, const uint8_t lineInstance, const u
 	pbx_assert(d != NULL && d->session != NULL);
 	sccp_msg_t *msg_out = NULL;
 
-	REQ(msg_out, BackSpaceReqMessage);
-	msg_out->data.BackSpaceReqMessage.lel_lineInstance = htolel(lineInstance);
-	msg_out->data.BackSpaceReqMessage.lel_callReference = htolel(callid);
+	REQ(msg_out, BackSpaceResMessage);
+	msg_out->data.BackSpaceResMessage.lel_lineInstance = htolel(lineInstance);
+	msg_out->data.BackSpaceResMessage.lel_callReference = htolel(callid);
 	sccp_dev_send(d, msg_out);
 
-	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Backspace request on line instance %u, call %u.\n", d->id, lineInstance, callid);
+	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: sent backspace response on line instance %u, call %u.\n", d->id, lineInstance, callid);
 }
 
 /*!
@@ -496,7 +497,7 @@ void handle_token_request(constSessionPtr s, devicePtr no_d, constMessagePtr msg
 
 	if (GLOB(reload_in_progress)) {
 		pbx_log(LOG_NOTICE, "SCCP: Reload in progress. Come back later.\n");
-		sccp_session_tokenReject(s, 5);
+		sccp_session_tokenReject(s, 10);
 		return;
 	}
 	if (!skinny_devicetype_exists(deviceType)) {
@@ -516,7 +517,7 @@ void handle_token_request(constSessionPtr s, devicePtr no_d, constMessagePtr msg
 			if (sccp_session_check_crossdevice(s, tmpdevice) || (state != SKINNY_DEVICE_RS_FAILED && state != SKINNY_DEVICE_RS_NONE)) {
 				pbx_log(LOG_NOTICE, "%s: Cleaning previous session, come back later, state:%s\n", DEV_ID_LOG(device), skinny_registrationstate2str(state));
 				sccp_session_crossdevice_cleanup(s, tmpdevice->session);
-				sccp_session_tokenReject(s, GLOB(token_backoff_time));
+				sccp_session_tokenReject(s, 10);
 				return;
 			}
 		}
@@ -667,7 +668,7 @@ void handle_SPCPTokenReq(constSessionPtr s, devicePtr no_d, constMessagePtr msg_
 
 	if (GLOB(reload_in_progress)) {
 		pbx_log(LOG_NOTICE, "SCCP: Reload in progress. Come back later.\n");
-		sccp_session_tokenReject(s, 5);
+		sccp_session_tokenReject(s, 10);
 		return;
 	}
 
@@ -698,7 +699,7 @@ void handle_SPCPTokenReq(constSessionPtr s, devicePtr no_d, constMessagePtr msg_
 			if (sccp_session_check_crossdevice(s, tmpdevice) || (state != SKINNY_DEVICE_RS_FAILED && state != SKINNY_DEVICE_RS_NONE)) {
 				pbx_log(LOG_NOTICE, "%s: Cleaning previous session, come back later, state:%s\n", DEV_ID_LOG(device), skinny_registrationstate2str(state));
 				sccp_session_crossdevice_cleanup(s, tmpdevice->session);
-				sccp_session_tokenRejectSPCP(s, 60);
+				sccp_session_tokenRejectSPCP(s, 10);
 				return;
 			}
 		}
@@ -726,7 +727,7 @@ void handle_SPCPTokenReq(constSessionPtr s, devicePtr no_d, constMessagePtr msg_
 	sccp_session_setProtocol(s, SPCP_PROTOCOL);
 	if (sccp_session_retainDevice(s, device) < 0) {
 		pbx_log(LOG_WARNING, "%s: Signing over the session to new device failed. Giving up.\n", DEV_ID_LOG(device));
-		sccp_session_tokenRejectSPCP(s, 60);
+		sccp_session_tokenRejectSPCP(s, GLOB(token_backoff_time));
 		return;
 	}
 	device->status.token = SCCP_TOKEN_STATE_REJ;
@@ -735,14 +736,15 @@ void handle_SPCPTokenReq(constSessionPtr s, devicePtr no_d, constMessagePtr msg_
 	if (device->checkACL(device) == FALSE) {
 		pbx_log(LOG_NOTICE, "%s: Rejecting device: Ip address '%s' denied (deny + permit/permithosts).\n", msg_in->data.SPCPRegisterTokenRequest.sId.deviceName, sccp_netsock_stringify_addr(&sas));
 		sccp_device_setRegistrationState(device, SKINNY_DEVICE_RS_FAILED);
-		sccp_session_tokenRejectSPCP(s, 60);
+		sccp_session_tokenRejectSPCP(s, GLOB(token_backoff_time));
 		return;
 	}
 
+	/* obsolete, see above */
 	if (device->session && device->session != s) {
 		sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_2 "%s: Crossover device registration!\n", device->id);
 		sccp_device_setRegistrationState(device, SKINNY_DEVICE_RS_FAILED);
-		sccp_session_tokenRejectSPCP(s, 60);
+		sccp_session_tokenRejectSPCP(s, GLOB(token_backoff_time));
 		device->session = sccp_session_reject(device->session, "Crossover session not allowed");
 		return;
 	}
@@ -1333,11 +1335,13 @@ void handle_unregister(constSessionPtr s, devicePtr device, constMessagePtr msg_
 
 	msg_out->data.UnregisterAckMessage.lel_status = SKINNY_UNREGISTERSTATUS_OK;
 	sccp_session_send2(s, msg_out);								// send directly to session, skipping device check
-	sccp_log((DEBUGCAT_MESSAGE + DEBUGCAT_ACTION)) (VERBOSE_PREFIX_3 "%s: unregister request sent\n", DEV_ID_LOG(d));
+	sccp_log((DEBUGCAT_MESSAGE + DEBUGCAT_ACTION)) (VERBOSE_PREFIX_3 "%s: Unregister Ack sent\n", DEV_ID_LOG(d));
 	
 	sched_yield();
 	if (s) {
 		sccp_session_stopthread(s, SKINNY_DEVICE_RS_NONE);
+	} else {
+		sccp_device_setRegistrationState(d, SKINNY_DEVICE_RS_NONE);
 	}
 }
 
@@ -2494,8 +2498,17 @@ void handle_hookflash(constSessionPtr s, devicePtr d, constMessagePtr msg_in)
 	uint32_t lineInstance = letohl(msg_in->data.HookFlashMessage.lel_lineInstance);
 	uint32_t callid = letohl(msg_in->data.HookFlashMessage.lel_callReference);
 
-	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: HookFlash (lineInstance: %d, callid: %d) not implemented !\n", DEV_ID_LOG(d), lineInstance, callid);
-	return;
+	if (lineInstance && callid) {
+		AUTO_RELEASE(sccp_line_t, l , sccp_line_find_byid(d, lineInstance));
+		if (l) {
+			handle_stimulus_transfer(d, l, lineInstance, callid, 0);
+		} else {
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: (HookFlash) Line could not be found for lineInstance:%d\n", d->id, lineInstance);
+		}
+	} else {
+		sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: (HookFlash) Either lineInstance:%d or CallId:%d not provided\n", d->id);
+		sccp_dump_msg(msg_in);
+	}
 }
 
 /*!
@@ -2533,8 +2546,10 @@ void handle_capabilities_res(constSessionPtr s, devicePtr d, constMessagePtr msg
 	sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Device has %d Capabilities\n", DEV_ID_LOG(d), n);
 	for (i = 0; i < n; i++) {
 		codec = letohl(msg_in->data.CapabilitiesResMessage.caps[i].lel_payloadCapability);
-		d->capabilities.audio[i] = codec;
-		sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: SCCP:%6d %-25s\n", d->id, codec, codec2str(codec));
+		if (codec2type(codec) == SKINNY_CODEC_TYPE_AUDIO) {
+			d->capabilities.audio[i] = codec;
+			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: SCCP:%6d %-25s\n", d->id, codec, codec2str(codec));
+		}
 	}
 
 	if ((SKINNY_CODEC_NONE == d->preferences.audio[0])) {
@@ -2920,6 +2935,8 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 	pbx_assert(d != NULL);
 	char resp = '\0';
 	int len = 0;
+	
+	
 	enum sccp_cili {
 		SCCP_CILI_HAS_NEITHER,
 		SCCP_CILI_HAS_CALLID,
@@ -2943,6 +2960,11 @@ void handle_keypad_button(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 		default:
 			pbx_log(LOG_ERROR, "%s: (handle_keypad) received unsupported digit:%d\n", DEV_ID_LOG(d), digit);
 			return;
+	}
+
+	if (!sccp_device_getActiveAccessory(d)) {
+		sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: SCCP (handle_keypad) Device is not active, no need to process further digit (%c). Giving up!\n", DEV_ID_LOG(d), resp);
+		return; 
 	}
 
 	uint8_t CallIdAndLineInstance = SCCP_CILI_HAS_NEITHER;
@@ -3588,6 +3610,18 @@ void handle_mediatransmissionfailure(constSessionPtr s, devicePtr d, constMessag
 }
 
 /*!
+ * \brief Handle IpPort Message
+ * \param no_s SCCP Session = NULL
+ * \param no_d SCCP Device = NULL
+ * \param msg_in SCCP Message
+ */
+void handle_ipport(constSessionPtr s, devicePtr d, constMessagePtr msg_in)
+{
+	d->rtpPort = letohl(msg_in->data.IpPortMessage.lel_rtpMediaPort);
+	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Got rtpPort:%d which the device wants to use for media\n", d->id, d->rtpPort);
+}
+
+/*!
  * \brief Handle Version for Session
  * \param s SCCP Session
  * \param d SCCP Device
@@ -4127,10 +4161,11 @@ void handle_updatecapabilities_message(constSessionPtr s, devicePtr d, constMess
 			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7s %-25s %-9s\n", DEV_ID_LOG(d), "#", "codec", "maxFrames");
 			for (audio_capability = 0; audio_capability < audio_capabilities; audio_capability++) {
 				audio_codec = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.audioCaps[audio_capability].lel_payloadCapability);
-				maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.audioCaps[audio_capability].lel_maxFramesPerPacket);
-
-				d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
-				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
+				if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_AUDIO) {
+					maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.audioCaps[audio_capability].lel_maxFramesPerPacket);
+					d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
+					sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
+				}
 				
 				if (audio_codec == SKINNY_CODEC_G723_1) {
 					sccp_log_and((DEBUGCAT_DEVICE + DEBUGCAT_HIGH))(VERBOSE_PREFIX_3 "%s: %7s bitRate: %d\n", DEV_ID_LOG(d), "", letohl(msg_in->data.UpdateCapabilitiesMessage.v3.audioCaps[audio_capability].payloads.lel_g723BitRate));
@@ -4168,27 +4203,28 @@ void handle_updatecapabilities_message(constSessionPtr s, devicePtr d, constMess
 
 			sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Device has %d Video Capabilities\n", DEV_ID_LOG(d), video_capabilities);
 			for (video_capability = 0; video_capability < video_capabilities; video_capability++) {
-				video_codec = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_payloadCapability);
-
-				d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
+				if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_VIDEO) {
+					video_codec = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_payloadCapability);
+					d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
 #if DEBUG
-//				char transmitReceiveStr[5];
-//				snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
-//				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %-3s %3d %-25s\n", DEV_ID_LOG(d), transmitReceiveStr, video_codec, codec2str(video_codec));
+					//char transmitReceiveStr[5];
+					//snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
+					//sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %-3s %3d %-25s\n", DEV_ID_LOG(d), transmitReceiveStr, video_codec, codec2str(video_codec));
 
-//				int protocolDependentData = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_protocolDependentData);
-//				int maxBitRate = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_maxBitRate);
+					//int protocolDependentData = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_protocolDependentData);
+					//int maxBitRate = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_maxBitRate);
 
-//				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %6s %-5s protocolDependentData: %d\n", DEV_ID_LOG(d), "", "", protocolDependentData);
-//				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %6s %-5s maxBitRate: %d\n", DEV_ID_LOG(d), "", "", maxBitRate);
-				char transmitReceiveStr[5];
-				snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
-				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
-				handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, (videoCapabilityUnionV2_t *)&msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].capability);
+					//sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %6s %-5s protocolDependentData: %d\n", DEV_ID_LOG(d), "", "", protocolDependentData);
+					//sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %6s %-5s maxBitRate: %d\n", DEV_ID_LOG(d), "", "", maxBitRate);
+					char transmitReceiveStr[5];
+					snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
+					sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
+					handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, (videoCapabilityUnionV2_t *)&msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].capability);
 
-				uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_levelPreferenceCount);
-				handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].levelPreference);
+					uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].lel_levelPreferenceCount);
+					handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesMessage.v3.videoCaps[video_capability].levelPreference);
 #endif
+				}
 			}
 			sccp_codec_reduceSet(d->preferences.video , d->capabilities.video);
 			if (previousVideoSupport == FALSE) {
@@ -4230,11 +4266,11 @@ void handle_updatecapabilities_V2_message(constSessionPtr s, devicePtr d, constM
 		sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7s %-25s %-9s\n", DEV_ID_LOG(d), "#", "codec", "maxFrames");
 		for (audio_capability = 0; audio_capability < audio_capabilities; audio_capability++) {
 			audio_codec = letohl(msg_in->data.UpdateCapabilitiesV2Message.audioCaps[audio_capability].lel_payloadCapability);
-			maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesV2Message.audioCaps[audio_capability].lel_maxFramesPerPacket);
-
-			d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
-			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
-			
+			if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_AUDIO) {
+				maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesV2Message.audioCaps[audio_capability].lel_maxFramesPerPacket);
+				d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
+				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
+			}
 			if (audio_codec == SKINNY_CODEC_G723_1) {
 				sccp_log_and((DEBUGCAT_DEVICE + DEBUGCAT_HIGH))(VERBOSE_PREFIX_3 "%s: %7s bitRate: %d\n", DEV_ID_LOG(d), "", letohl(msg_in->data.UpdateCapabilitiesV2Message.audioCaps[audio_capability].payloads.lel_g723BitRate));
 			} else {
@@ -4264,17 +4300,18 @@ void handle_updatecapabilities_V2_message(constSessionPtr s, devicePtr d, constM
 		sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Device has %d Video Capabilities\n", DEV_ID_LOG(d), video_capabilities);
 		for (video_capability = 0; video_capability < video_capabilities; video_capability++) {
 			video_codec = letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_payloadCapability);
-
-			d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
+			if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_VIDEO) {
+				d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
 #if DEBUG
-			char transmitReceiveStr[5];
-			snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
-			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
-			handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, &msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].capability);
+				char transmitReceiveStr[5];
+				snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
+				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
+				handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, &msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].capability);
 
-			uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_levelPreferenceCount);
-			handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].levelPreference);
+				uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].lel_levelPreferenceCount);
+				handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesV2Message.videoCaps[video_capability].levelPreference);
 #endif
+			}
 		}
 		sccp_codec_reduceSet(d->preferences.video , d->capabilities.video);
 		if (previousVideoSupport == FALSE) {
@@ -4316,11 +4353,11 @@ void handle_updatecapabilities_V3_message(constSessionPtr s, devicePtr d, constM
 		sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7s %-25s %-9s\n", DEV_ID_LOG(d), "#", "codec", "maxFrames");
 		for (audio_capability = 0; audio_capability < audio_capabilities; audio_capability++) {
 			audio_codec = letohl(msg_in->data.UpdateCapabilitiesV3Message.audioCaps[audio_capability].lel_payloadCapability);
-			maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesV3Message.audioCaps[audio_capability].lel_maxFramesPerPacket);
-
-			d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
-			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
-			
+			if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_AUDIO) {
+				maxFramesPerPacket = letohl(msg_in->data.UpdateCapabilitiesV3Message.audioCaps[audio_capability].lel_maxFramesPerPacket);
+				d->capabilities.audio[audio_capability] = audio_codec;		/** store our audio capabilities */
+				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %7d %-25s %-6d\n", DEV_ID_LOG(d), audio_codec, codec2str(audio_codec), maxFramesPerPacket);
+			}	
 			if (audio_codec == SKINNY_CODEC_G723_1) {
 				sccp_log_and((DEBUGCAT_DEVICE + DEBUGCAT_HIGH))(VERBOSE_PREFIX_3 "%s: %7s bitRate: %d\n", DEV_ID_LOG(d), "", letohl(msg_in->data.UpdateCapabilitiesV3Message.audioCaps[audio_capability].payloads.lel_g723BitRate));
 			} else {
@@ -4352,23 +4389,24 @@ void handle_updatecapabilities_V3_message(constSessionPtr s, devicePtr d, constM
 		sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: Device has %d Video Capabilities\n", DEV_ID_LOG(d), video_capabilities);
 		for (video_capability = 0; video_capability < video_capabilities; video_capability++) {
 			video_codec = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_payloadCapability);
-
-			d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
+			if (codec2type(audio_codec) == SKINNY_CODEC_TYPE_VIDEO) {
+				d->capabilities.video[video_capability] = video_codec;		/** store our video capabilities */
 #if DEBUG
-			char transmitReceiveStr[5];
-			snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
-			sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
-			handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, &msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].capability);
+				char transmitReceiveStr[5];
+				snprintf(transmitReceiveStr, sizeof(transmitReceiveStr), "%c-%c", (letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_RECEIVE) ? '<' : ' ', (letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_transmitOrReceive) & SKINNY_TRANSMITRECEIVE_TRANSMIT) ? '>' : ' ');
+				sccp_log((DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: %2d: %-3s %3d %-25s\n", DEV_ID_LOG(d), video_capability, transmitReceiveStr, video_codec, codec2str(video_codec));
+				handle_updatecapabilities_dissect_videocapabiltyunion(d, video_codec, &msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].capability);
 
-			uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_levelPreferenceCount);
-			handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].levelPreference);
+				uint8_t levelPreferences = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_levelPreferenceCount);
+				handle_updatecapabilities_dissect_levelPreference(d, levelPreferences, msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].levelPreference);
 
-			int encryptionCapability = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_encryptionCapability);
-			sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: EncryptionCapability: %s\n", DEV_ID_LOG(d), encryptionCapability ? "Yes" : "No");
+				int encryptionCapability = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_encryptionCapability);
+				sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: EncryptionCapability: %s\n", DEV_ID_LOG(d), encryptionCapability ? "Yes" : "No");
 
-			int ipv46 = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_ipv46);
-			sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: IPV46 Setting: %s\n", DEV_ID_LOG(d), ipv46 == 0 ? "IPv4" : ipv46 == 1 ? "IPv6" : "Mixed Mode");
+				int ipv46 = letohl(msg_in->data.UpdateCapabilitiesV3Message.videoCaps[video_capability].lel_ipv46);
+				sccp_log((DEBUGCAT_CORE + DEBUGCAT_DEVICE)) (VERBOSE_PREFIX_3 "%s: IPV46 Setting: %s\n", DEV_ID_LOG(d), ipv46 == 0 ? "IPv4" : ipv46 == 1 ? "IPv6" : "Mixed Mode");
 #endif
+			}
 		}
 		sccp_codec_reduceSet(d->preferences.video , d->capabilities.video);
 		if (previousVideoSupport == FALSE) {
