@@ -20,6 +20,7 @@ SCCP_FILE_VERSION(__FILE__, "");
 #include "sccp_netsock.h"
 #include "sccp_utils.h"
 #include <netinet/in.h>
+#include <signal.h>
 
 #ifndef CS_USE_POLL_COMPAT
 #include <poll.h>
@@ -39,7 +40,7 @@ SCCP_FILE_VERSION(__FILE__, "");
 #include <asterisk/cli.h>
 
 #define WRITE_BACKOFF 500											/* backoff time in millisecs, doubled every write retry (150+300+600+1200+2400+4800 = 9450 millisecs = 9.5 sec) */
-#define SESSION_DEVICE_CLEANUP_TIME 10										/* wait time before destroying a device on thread exit */
+//#define SESSION_DEVICE_CLEANUP_TIME 10										/* wait time before destroying a device on thread exit */
 #define KEEPALIVE_ADDITIONAL_PERCENT_SESSION 1.05								/* extra time allowed for device keepalive overrun (percentage of GLOB(keepalive)) */
 #define KEEPALIVE_ADDITIONAL_PERCENT_DEVICE 1.20								/* extra time allowed for device keepalive overrun (percentage of GLOB(keepalive)) */
 #define KEEPALIVE_ADDITIONAL_PERCENT_ON_CALL 2.00								/* extra time allowed for device keepalive overrun (percentage of GLOB(keepalive)) */
@@ -50,8 +51,8 @@ SCCP_FILE_VERSION(__FILE__, "");
 #define sccp_session_trylock(x)			pbx_mutex_trylock(&(x)->lock)
 /* */
 
-void sccp_netsock_device_thread_exit(void *session);
-void *sccp_netsock_device_thread(void *session);
+void sccp_session_device_thread_exit(void *session);
+void *sccp_session_device_thread(void *session);
 void __sccp_session_stopthread(sessionPtr session, uint8_t newRegistrationState);
 gcc_inline void recalc_wait_time(sccp_session_t *s);
 
@@ -479,7 +480,7 @@ void sccp_session_releaseDevice(constSessionPtr volatile session)
  *      - sessions
  *      - device
  */
-static void destroy_session(sccp_session_t * s, uint8_t cleanupTime)
+static void destroy_session(sccp_session_t * s)
 {
 	if (!s) {
 		return;
@@ -526,7 +527,7 @@ static void destroy_session(sccp_session_t * s, uint8_t cleanupTime)
  * \callgraph
  * \callergraph
  */
-void sccp_netsock_device_thread_exit(void *session)
+void sccp_session_device_thread_exit(void *session)
 {
 	sccp_session_t *s = (sccp_session_t *) session;
 
@@ -543,7 +544,7 @@ void sccp_netsock_device_thread_exit(void *session)
 	}
 	sccp_session_unlock(s);
 	s->session_thread = AST_PTHREADT_NULL;
-	destroy_session(s, SESSION_DEVICE_CLEANUP_TIME);
+	destroy_session(s);
 }
 
 gcc_inline void recalc_wait_time(sccp_session_t *s)
@@ -585,7 +586,7 @@ gcc_inline void recalc_wait_time(sccp_session_t *s)
  * \callgraph
  * \callergraph
  */
-void *sccp_netsock_device_thread(void *session)
+void *sccp_session_device_thread(void *session)
 {
 	int res;
 	sccp_session_t *s = (sccp_session_t *) session;
@@ -600,7 +601,7 @@ void *sccp_netsock_device_thread(void *session)
 	size_t recv_len = 0;
 	sccp_msg_t msg = { {0,} };
 
-	pthread_cleanup_push(sccp_netsock_device_thread_exit, session);
+	pthread_cleanup_push(sccp_session_device_thread_exit, session);
 	pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
 
@@ -744,6 +745,7 @@ gcc_inline void sccp_session_stopthread(constSessionPtr session, uint8_t newRegi
  * \lock
  *      - sessions
  */
+#if 0
 static void sccp_accept_connection(void)
 {
 	/* called without GLOB(sessions_lock) */
@@ -790,7 +792,7 @@ static void sccp_accept_connection(void)
 			pbx_log(LOG_ERROR, SS_Memory_Allocation_Error, "SCCP");
 		}
 		sccp_session_reject(s, "Device ip not authorized");
-		destroy_session(s, 0);
+		destroy_session(s);
 		return;
 	}
 	sccp_session_addToGlobals(s);
@@ -812,7 +814,7 @@ static void sccp_accept_connection(void)
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	pbx_pthread_create(&s->session_thread, &attr, sccp_netsock_device_thread, s);
+	pbx_pthread_create(&s->session_thread, &attr, sccp_session_device_thread, s);
 
 	/*
 	size_t stacksize = 0;
@@ -822,7 +824,8 @@ static void sccp_accept_connection(void)
 	*/
 }
 
-static void sccp_netsock_cleanup_timed_out(void)
+/*
+]static void sccp_netsock_cleanup_timed_out(void)
 {
 	sccp_session_t *session;
 
@@ -839,70 +842,190 @@ static void sccp_netsock_cleanup_timed_out(void)
 		SCCP_LIST_TRAVERSE_SAFE_END;
 	}
 }
+*/
+#endif
 
+pthread_t accept_tid;
+int accept_sock;
 
-/*!
- * \brief Socket Thread
- * \param ignore None
- *
- * \lock
- *      - sessions
- *      - globals
- *	- see sccp_device_check_update()
- *	- see sccp_netsock_poll()
- *	- see destroy_session()
- *	- see sccp_read_data()
- *	- see sccp_process_data()
- *	- see sccp_handle_message()
- *	- see sccp_device_sendReset()
- */
-void *sccp_netsock_thread(void * ignore)
+static boolean_t sccp_session_new_socket_allowed(struct sockaddr_storage *sin)
 {
-	struct pollfd fds[1];
-	fds[0].events = POLLIN | POLLPRI;
-	fds[0].revents = 0;
-	fds[0].fd = GLOB(descriptor);
+	char addrStr[INET6_ADDRSTRLEN];
+	sccp_copy_string(addrStr, sccp_netsock_stringify(sin), sizeof(addrStr));
+	if (GLOB(ha) && sccp_apply_ha(GLOB(ha), sin) != AST_SENSE_ALLOW) {
+		struct ast_str *buf = pbx_str_alloca(DEFAULT_PBX_STR_BUFFERSIZE);
+		if (buf) {
+			sccp_print_ha(buf, DEFAULT_PBX_STR_BUFFERSIZE, GLOB(ha));
+			pbx_log(LOG_NOTICE, "SCCP: Rejecting Connection: Ip-address '%s' denied. Check general deny/permit settings (%s).\n", addrStr, pbx_str_buffer(buf));
+		} else {
+			pbx_log(LOG_ERROR, SS_Memory_Allocation_Error, "SCCP");
+		}
+		//sccp_session_reject(s, "Device ip not authorized");
+		return FALSE;
+	}
+	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP: Accepted Client Connection from %s\n", addrStr);
+	return TRUE;
+}
 
-	int res = 0;
-	int pollTimeout = GLOB(keepalive) * 1000;
-	boolean_t reload_in_progress = FALSE;
+static sccp_session_t * sccp_create_session(int new_socket)
+{
+	sccp_session_t *s;
 
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-	while (GLOB(descriptor) > -1) {
-		res = sccp_netsock_poll(fds, 1, pollTimeout);
-		pthread_testcancel();
-		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
-		if (res < 0) {
-			if (!(errno == EINTR || errno == EAGAIN)) {
-				pbx_log(LOG_ERROR, "SCCP poll() returned %d. errno: %d (%s)\n", res, errno, strerror(errno));
+	if (!(s = sccp_calloc(sizeof *s, 1))) {
+		pbx_log(LOG_ERROR, SS_Memory_Allocation_Error, "SCCP");
+		return NULL;
+	}
+
+	sccp_mutex_init(&s->lock);
+
+	s->fds[0].events = POLLIN | POLLPRI;
+	s->fds[0].revents = 0;
+	s->fds[0].fd = new_socket;
+	s->protocolType = SCCP_PROTOCOL;
+	s->lastKeepAlive = time(0);
+	
+	return s;
+} 
+
+static void sccp_session_set_ourip(sccp_session_t *s)
+{
+	/** set default handler for registration to sccp */
+	if (sccp_netsock_is_any_addr(&GLOB(bindaddr))) {
+		__sccp_session_setOurAddressFromTheirs(&s->sin, &s->ourip);
+	} else {
+		memcpy(&s->ourip, &GLOB(bindaddr), sizeof(s->ourip));
+	}
+	sccp_copy_string(s->designator, sccp_netsock_stringify(&s->ourip), sizeof(s->designator));
+	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP: Connected on server via %s\n", s->designator);
+}
+
+static void *accept_thread(void *ignore)
+{
+	int new_socket;
+	struct sockaddr_storage incoming;
+	sccp_session_t *s = NULL;
+	socklen_t length = (socklen_t) (sizeof(struct sockaddr_storage));
+	struct protoent *proto = NULL;
+
+	for (;;) {
+		if ((new_socket = accept(accept_sock, (struct sockaddr *)&incoming, &length)) < 0) {
+			pbx_log(LOG_ERROR, "Error accepting new socket %s\n", strerror(errno));
+			continue;
+		}
+
+		if ((proto = getprotobyname("tcp"))) {
+			//sccp_netsock_setoptions(new_socket, /*reuse*/ 0, /*linger*/ -1 , GLOB(keepalive) * 2);
+			sccp_netsock_setoptions(new_socket, /*reuse*/ 0, /*linger*/ -1, /* keepalive */ -1);
+		}
+
+		if (!sccp_session_new_socket_allowed(&incoming)) {
+			close(new_socket);
+			continue;
+		}
+		
+		if ( (s = sccp_create_session(new_socket) ) == NULL) {
+			close(new_socket);
+			continue;
+		}
+		memcpy(&s->sin, &incoming, sizeof(s->sin));
+		sccp_session_set_ourip(s);
+		sccp_session_addToGlobals(s);
+		recalc_wait_time(s);
+		
+		if (pbx_pthread_create(&s->session_thread, NULL, sccp_session_device_thread, s)) {
+			destroy_session(s);
+		}
+	}
+	sccp_log(DEBUGCAT_SOCKET)(VERBOSE_PREFIX_3, "Killing accept thread\n");
+	close(new_socket);
+	close(accept_sock);
+	accept_sock = -1;
+	return 0;
+}
+
+void sccp_session_start_accept_thread(void)
+{
+	ast_pthread_create_background(&accept_tid, NULL, accept_thread, NULL);
+}
+
+void sccp_session_stop_accept_thread(void)
+{
+	pbx_rwlock_wrlock(&GLOB(lock));
+	if (accept_tid && (accept_tid != AST_PTHREADT_STOP)) {
+		pthread_cancel(accept_tid);
+		pthread_kill(accept_tid, SIGURG);
+		pthread_join(accept_tid, NULL);
+	}
+	accept_tid = AST_PTHREADT_STOP;
+	pbx_rwlock_unlock(&GLOB(lock));
+}
+
+boolean_t sccp_session_bind_and_listen(struct sockaddr_storage *bindaddr)
+{
+	if (!bindaddr) {
+		return FALSE;
+	}
+	
+	int result = FALSE;
+	char addrStr[INET6_ADDRSTRLEN];
+	static struct sockaddr_storage boundaddr = {0};
+
+	if (accept_sock > -1 && ( sccp_netsock_getPort(&boundaddr) != sccp_netsock_getPort(bindaddr) || sccp_netsock_cmp_addr(&boundaddr, bindaddr) ) ) {
+		sccp_session_stop_accept_thread();
+		close(accept_sock);
+		accept_sock = -1;
+	}
+
+	if (accept_sock < 0) {
+		int status;
+		int port = sccp_netsock_getPort(bindaddr);
+		memcpy(&boundaddr, bindaddr, sizeof(struct sockaddr_storage));
+		char port_str[15] = "cisco-sccp";
+
+		struct addrinfo hints, *res;
+		memset(&hints, 0, sizeof hints);								// make sure the struct is empty
+		hints.ai_family = AF_UNSPEC;									// don't care IPv4 or IPv6
+		hints.ai_socktype = SOCK_STREAM;								// TCP stream sockets
+		hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;					// fill in my IP for me
+
+		if (port) {
+			snprintf(port_str, sizeof(port_str), "%d", port);
+		}
+
+		sccp_copy_string(addrStr, sccp_netsock_stringify_addr(bindaddr), sizeof(addrStr));
+		if ((status = getaddrinfo(sccp_netsock_stringify_addr(bindaddr), port_str, &hints, &res)) != 0) {
+			pbx_log(LOG_ERROR, "Failed to get addressinfo for %s:%s, error: %s!\n", sccp_netsock_stringify_addr(bindaddr), port_str, gai_strerror(status));
+			return FALSE;
+		}
+		do {
+			accept_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);			// need to add code to handle multiple interfaces (multi homed server) -> multiple socket descriptors
+			if (accept_sock < 0) {
+				pbx_log(LOG_ERROR, "Unable to create SCCP socket: %s\n", strerror(errno));
 				break;
 			}
-		} else if (res == 0) {
-			sccp_netsock_cleanup_timed_out();
-		} else {
-			pbx_rwlock_rdlock(&GLOB(lock));
-			reload_in_progress = GLOB(reload_in_progress);
-			pollTimeout = GLOB(keepalive) * 1000;
-			pbx_rwlock_unlock(&GLOB(lock));
-			if (!reload_in_progress) {
-				sccp_log((DEBUGCAT_SOCKET)) (VERBOSE_PREFIX_3 "SCCP: Accept Connection\n");
-				sccp_accept_connection();
+			sccp_netsock_setoptions(accept_sock, /*reuse*/ 1, /*linger*/ -1, /*keepalive*/ -1);
+			if (bind(accept_sock, res->ai_addr, res->ai_addrlen) < 0) {
+				pbx_log(LOG_ERROR, "Failed to bind to %s:%d: %s!\n", addrStr, port, strerror(errno));
+				close(accept_sock);
+				accept_sock = -1;
+				break;
 			}
-		}
-		pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-		pthread_testcancel();
+			if (listen(accept_sock, DEFAULT_SCCP_BACKLOG)) {
+				pbx_log(LOG_ERROR, "Failed to start listening to %s:%d: %s\n", addrStr, port, strerror(errno));
+				close(accept_sock);
+				accept_sock = -1;
+				break;
+			}
+			sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP: started listening on %s:%d\n", addrStr, port);
+			sccp_session_start_accept_thread();
+		} while(0);
+		freeaddrinfo(res);
 	}
-	pbx_rwlock_wrlock(&GLOB(lock));
-	GLOB(socket_thread) = AST_PTHREADT_NULL;
-	close(GLOB(descriptor));
-	GLOB(descriptor) = -1;
-	pbx_rwlock_unlock(&GLOB(lock));
 
-	sccp_log((DEBUGCAT_SOCKET)) (VERBOSE_PREFIX_3 "SCCP: Exit from the socket thread\n");
-	return NULL;
+	if (accept_sock > -1) {
+		result = TRUE;
+	}
+	return result;	
 }
 
 /*!

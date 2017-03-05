@@ -13,6 +13,10 @@
 struct sccp_session;
 
 __BEGIN_C_EXTERN__
+SCCP_API boolean_t SCCP_CALL sccp_session_bind_and_listen(struct sockaddr_storage *bindaddr);
+SCCP_API void SCCP_CALL sccp_session_start_accept_thread(void);
+SCCP_API void SCCP_CALL sccp_session_stop_accept_thread(void);
+
 SCCP_API void SCCP_CALL sccp_session_terminateAll(void);
 SCCP_API const char *const SCCP_CALL sccp_session_getDesignator(constSessionPtr session);
 SCCP_API void SCCP_CALL sccp_session_sendmsg(constDevicePtr device, sccp_mid_t t);
