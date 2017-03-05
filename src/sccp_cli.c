@@ -2705,7 +2705,7 @@ static int sccp_cli_reload(int fd, int argc, char *argv[])
 					goto EXIT;
 				}
 				sccp_config_readDevicesLines(SCCP_CONFIG_READRELOAD);
-				returnval = RESULT_SUCCESS;
+				returnval = sccp_session_bind_and_listen(&GLOB(bindaddr)) ? RESULT_SUCCESS : RESULT_FAILURE;
 			}
 			break;
 		case CONFIG_STATUS_FILE_OLD:
