@@ -48,13 +48,6 @@ static PBX_FRAME_TYPE sccp_null_frame;										/*!< Asterisk Structure */
  */
 int load_config(void)
 {
-	int oldPort = 0;											//ntohs(GLOB(bindaddr));
-	int newPort = 0;
-	int returnvalue = FALSE;
-	char addrStr[INET6_ADDRSTRLEN];
-
-	oldPort = sccp_netsock_getPort(&GLOB(bindaddr));
-
 	/* Setup the monitor thread default */
 #if ASTERISK_VERSION_GROUP < 110
 	GLOB(monitor_thread) = AST_PTHREADT_NULL;								// ADDED IN SVN 414 -FS
@@ -82,67 +75,7 @@ int load_config(void)
 	}
 	sccp_config_readDevicesLines(SCCP_CONFIG_READINITIAL);
 
-	/* ok the config parse is done */
-	newPort = sccp_netsock_getPort(&GLOB(bindaddr));
-	if ((GLOB(descriptor) > -1) && (newPort != oldPort)) {
-		close(GLOB(descriptor));
-		GLOB(descriptor) = -1;
-	}
-
-	if (GLOB(descriptor) < 0) {
-		int status;
-		struct addrinfo hints, *res;
-		char port_str[15] = "";
-
-		memset(&hints, 0, sizeof hints);								// make sure the struct is empty
-		hints.ai_family = AF_UNSPEC;									// don't care IPv4 or IPv6
-		hints.ai_socktype = SOCK_STREAM;								// TCP stream sockets
-		hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;					// fill in my IP for me
-
-		if (sccp_netsock_getPort(&GLOB(bindaddr)) > 0) {
-			snprintf(port_str, sizeof(port_str), "%d", sccp_netsock_getPort(&GLOB(bindaddr)));
-		} else {
-			snprintf(port_str, sizeof(port_str), "%s", "cisco-sccp");
-		}
-
-		sccp_copy_string(addrStr, sccp_netsock_stringify_addr(&GLOB(bindaddr)), sizeof(addrStr));
-
-		if ((status = getaddrinfo(sccp_netsock_stringify_addr(&GLOB(bindaddr)), port_str, &hints, &res)) != 0) {
-			pbx_log(LOG_ERROR, "Failed to get addressinfo for %s:%s, error: %s!\n", sccp_netsock_stringify_addr(&GLOB(bindaddr)), port_str, gai_strerror(status));
-			return FALSE;
-		}
-		do {
-			GLOB(descriptor) = socket(res->ai_family, res->ai_socktype, res->ai_protocol);			// need to add code to handle multiple interfaces (multi homed server) -> multiple socket descriptors
-			if (GLOB(descriptor) < 0) {
-				pbx_log(LOG_ERROR, "Unable to create SCCP socket: %s\n", strerror(errno));
-				break;
-			} else {
-				sccp_netsock_setoptions(GLOB(descriptor), /*reuse*/ 1, /*linger*/ 1, 0 /*keepalive*/);
-				/* get ip-address string */
-				if (bind(GLOB(descriptor), res->ai_addr, res->ai_addrlen) < 0) {
-					pbx_log(LOG_ERROR, "Failed to bind to %s:%d: %s!\n", addrStr, sccp_netsock_getPort(&GLOB(bindaddr)), strerror(errno));
-					close(GLOB(descriptor));
-					GLOB(descriptor) = -1;
-					break;
-				}
-				ast_verbose(VERBOSE_PREFIX_3 "SCCP channel driver up and running on %s:%d\n", addrStr, sccp_netsock_getPort(&GLOB(bindaddr)));
-
-				if (listen(GLOB(descriptor), DEFAULT_SCCP_BACKLOG)) {
-					pbx_log(LOG_ERROR, "Failed to start listening to %s:%d: %s\n", addrStr, sccp_netsock_getPort(&GLOB(bindaddr)), strerror(errno));
-					close(GLOB(descriptor));
-					GLOB(descriptor) = -1;
-					break;
-				}
-				sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP listening on %s:%d\n", addrStr, sccp_netsock_getPort(&GLOB(bindaddr)));
-				GLOB(reload_in_progress) = FALSE;
-				pbx_pthread_create(&GLOB(socket_thread), NULL, sccp_netsock_thread, NULL);
-				returnvalue = TRUE;
-			}
-		} while(0);
-		freeaddrinfo(res);
-	}
-
-	return returnvalue;
+	return TRUE;
 }
 
 /*!
@@ -194,8 +127,6 @@ boolean_t sccp_prePBXLoad(void)
 	sccp_event_subscribe(SCCP_EVENT_FEATURE_CHANGED, sccp_device_featureChangedDisplay, TRUE);
 	sccp_event_subscribe(SCCP_EVENT_FEATURE_CHANGED, sccp_util_featureStorageBackend, TRUE);
 
-	GLOB(descriptor) = -1;
-
 	GLOB(bindaddr).ss_family = AF_INET;
 	((struct sockaddr_in *) &GLOB(bindaddr))->sin_port = DEFAULT_SCCP_PORT;
 
@@ -245,10 +176,10 @@ boolean_t sccp_prePBXLoad(void)
 
 boolean_t sccp_postPBX_load(void)
 {
+	boolean_t result = FALSE;
 	pbx_rwlock_wrlock(&GLOB(lock));
 
 	// initialize SCCP_REVISIONSTR and SCCP_REVISIONSTR
-	
 #ifdef VCS_SHORT_HASH
 #ifdef VCS_WC_MODIFIED
 	snprintf(SCCP_REVISIONSTR, sizeof(SCCP_REVISIONSTR), "%sM", VCS_SHORT_HASH);
@@ -263,7 +194,9 @@ boolean_t sccp_postPBX_load(void)
 	GLOB(module_running) = TRUE;
 	sccp_refcount_schedule_cleanup((const void *) 0);
 	pbx_rwlock_unlock(&GLOB(lock));
-	return TRUE;
+
+	result = sccp_session_bind_and_listen( &GLOB(bindaddr) );
+	return result;
 }
 
 #if UNUSEDCODE // 2015-11-01
@@ -296,30 +229,14 @@ int sccp_preUnload(void)
 	/* copy some of the required global variables */
 	pbx_rwlock_wrlock(&GLOB(lock));
 	GLOB(module_running) = FALSE;
-	int descriptor = GLOB(descriptor);
-	pthread_t socket_thread = GLOB(socket_thread);
 	pbx_rwlock_unlock(&GLOB(lock));
 
 	/* unsubscribe from services */
 	sccp_event_unsubscribe(SCCP_EVENT_FEATURE_CHANGED, sccp_device_featureChangedDisplay);
 	sccp_event_unsubscribe(SCCP_EVENT_FEATURE_CHANGED, sccp_util_featureStorageBackend);
 
-	/* close accept thread by shutdown the socket descriptor read side -> interrupt polling and break accept loop */
-	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_2 "SCCP: Closing Socket Accept Descriptor\n");
-	shutdown(descriptor, SHUT_RD);
-	if (socket_thread != AST_PTHREADT_NULL) {
-		int s = pthread_cancel(socket_thread);
-		if (s != 0) {
-			pbx_log(LOG_NOTICE, "SCCP: (preUnload) pthread_cancel error\n");
-		}
-		void *res;
-		if (pthread_join(socket_thread, &res) == 0) {
-			if (res != PTHREAD_CANCELED) {
-				pbx_log(LOG_ERROR, "SCCP: (session_crossdevice_cleanup) pthread join failed\n");
-			}
-		}
-		GLOB(socket_thread) = AST_PTHREADT_NULL;
-	}
+	sccp_session_stop_accept_thread();
+
 	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_2 "SCCP: Hangup open channels\n");				//! \todo make this pbx independend
 
 	/* removing devices */
@@ -430,7 +347,7 @@ int sccp_reload(void)
 				break;
 			}
 			sccp_config_readDevicesLines(readingtype);
-			returnval = 3;
+			returnval = sccp_session_bind_and_listen( &GLOB(bindaddr) ) ? 3 : 4;
 			break;
 		case CONFIG_STATUS_FILE_OLD:
 			pbx_log(LOG_ERROR, "Error reloading from '%s'\n", GLOB(config_file_name));
