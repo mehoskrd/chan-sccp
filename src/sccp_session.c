@@ -20,6 +20,7 @@ SCCP_FILE_VERSION(__FILE__, "");
 #include "sccp_netsock.h"
 #include "sccp_utils.h"
 #include <netinet/in.h>
+#include <signal.h>
 
 #ifndef CS_USE_POLL_COMPAT
 #include <poll.h>
