@@ -935,7 +935,7 @@ static void *accept_thread(void *ignore)
 			destroy_session(s);
 		}
 	}
-	sccp_log(DEBUGCAT_SOCKET)(VERBOSE_PREFIX_3, "Killing accept thread\n");
+	sccp_log(DEBUGCAT_SOCKET)(VERBOSE_PREFIX_3 "Killing accept thread\n");
 	close(new_socket);
 	close(accept_sock);
 	accept_sock = -1;
