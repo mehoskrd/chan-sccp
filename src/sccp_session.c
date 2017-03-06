@@ -739,91 +739,6 @@ gcc_inline void sccp_session_stopthread(constSessionPtr session, uint8_t newRegi
 	}
 }
 
-/*!
- * \brief Socket Accept Connection
- *
- * \lock
- *      - sessions
- */
-#if 0
-static void sccp_accept_connection(void)
-{
-	/* called without GLOB(sessions_lock) */
-	struct sockaddr_storage incoming;
-	sccp_session_t *s;
-	int new_socket;
-	char addrStr[INET6_ADDRSTRLEN];
-
-	socklen_t length = (socklen_t) (sizeof(struct sockaddr_storage));
-
-	if (!(s = sccp_calloc(sizeof *s, 1))) {
-		pbx_log(LOG_ERROR, SS_Memory_Allocation_Error, "SCCP");
-		return;
-	}
-
-	if ((new_socket = accept(GLOB(descriptor), (struct sockaddr *) &incoming, &length)) < 0) {
-		pbx_log(LOG_ERROR, "Error accepting new socket %s\n", strerror(errno));
-		sccp_free(s);
-		return;
-	}
-	sccp_netsock_setoptions(new_socket, /*reuse*/ 0, /*linger*/ 0, GLOB(keepalive) * 2);
-	
-	memcpy(&s->sin, &incoming, sizeof(s->sin));
-	sccp_mutex_init(&s->lock);
-
-	s->fds[0].events = POLLIN | POLLPRI;
-	s->fds[0].revents = 0;
-	s->fds[0].fd = new_socket;
-
-	if (!GLOB(ha)) {
-		pbx_log(LOG_NOTICE, "No global ha list\n");
-	}
-
-	sccp_copy_string(addrStr, sccp_netsock_stringify(&s->sin), sizeof(addrStr));
-
-	/* check ip address against global permit/deny ACL */
-	if (GLOB(ha) && sccp_apply_ha(GLOB(ha), &s->sin) != AST_SENSE_ALLOW) {
-		struct ast_str *buf = pbx_str_alloca(DEFAULT_PBX_STR_BUFFERSIZE);
-		if (buf) {
-			sccp_print_ha(buf, DEFAULT_PBX_STR_BUFFERSIZE, GLOB(ha));
-			sccp_log(0) ("SCCP: Rejecting Connection: Ip-address '%s' denied. Check general deny/permit settings (%s).\n", addrStr, pbx_str_buffer(buf));
-			pbx_log(LOG_WARNING, "SCCP: Rejecting Connection: Ip-address '%s' denied. Check general deny/permit settings (%s).\n", addrStr, pbx_str_buffer(buf));
-		} else {
-			pbx_log(LOG_ERROR, SS_Memory_Allocation_Error, "SCCP");
-		}
-		sccp_session_reject(s, "Device ip not authorized");
-		destroy_session(s);
-		return;
-	}
-	sccp_session_addToGlobals(s);
-
-	/** set default handler for registration to sccp */
-	s->protocolType = SCCP_PROTOCOL;
-	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP: Accepted Client Connection from %s\n", addrStr);
-
-	if (sccp_netsock_is_any_addr(&GLOB(bindaddr))) {
-		__sccp_session_setOurAddressFromTheirs(&incoming, &s->ourip);
-	} else {
-		memcpy(&s->ourip, &GLOB(bindaddr), sizeof(s->ourip));
-	}
-	sccp_copy_string(s->designator, sccp_netsock_stringify(&s->ourip), sizeof(s->designator));
-	sccp_log((DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "SCCP: Connected on server via %s\n", s->designator);
-	s->lastKeepAlive = time(0);
-	recalc_wait_time(s);
-
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	pbx_pthread_create(&s->session_thread, &attr, sccp_session_device_thread, s);
-
-	/*
-	size_t stacksize = 0;
-	if (!pthread_attr_getstacksize(&attr, &stacksize)) {
-		sccp_log((DEBUGCAT_HIGH)) (VERBOSE_PREFIX_3 "SCCP: Using %d memory for this thread\n", (int) stacksize);
-	}
-	*/
-}
-
 /*
 ]static void sccp_netsock_cleanup_timed_out(void)
 {
@@ -843,7 +758,6 @@ static void sccp_accept_connection(void)
 	}
 }
 */
-#endif
 
 pthread_t accept_tid;
 int accept_sock;
