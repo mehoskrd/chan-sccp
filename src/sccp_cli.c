@@ -3465,7 +3465,7 @@ int sccp_register_cli(void)
 	uint i, res = 0;
 
 	for (i = 0; i < ARRAY_LEN(cli_entries); i++) {
-		sccp_log((DEBUGCAT_CLI)) (VERBOSE_PREFIX_2 "Cli registered action %s\n", (cli_entries + i)->_full_cmd);
+		sccp_log((DEBUGCAT_CLI)) (VERBOSE_PREFIX_2 "Cli registered action %s\n", (cli_entries + i)->summary);
 		res |= pbx_cli_register(cli_entries + i);
 	}
 
@@ -3512,7 +3512,7 @@ int sccp_unregister_cli(void)
 	uint i, res = 0;
 
 	for (i = 0; i < ARRAY_LEN(cli_entries); i++) {
-		sccp_log((DEBUGCAT_CLI)) (VERBOSE_PREFIX_2 "Cli unregistered action %s\n", (cli_entries + i)->_full_cmd);
+		sccp_log((DEBUGCAT_CLI)) (VERBOSE_PREFIX_2 "Cli unregistered action %s\n", (cli_entries + i)->summary);
 		res |= pbx_cli_unregister(cli_entries + i);
 	}
 	res |= pbx_manager_unregister("SCCPShowGlobals");

@@ -104,8 +104,6 @@ boolean_t sccp_prePBXLoad(void)
 #if ASTERISK_VERSION_GROUP < 110
 	pbx_mutex_init(&GLOB(monitor_lock));
 #endif
-
-	/* init refcount */
 	sccp_refcount_init();
 
 	SCCP_RWLIST_HEAD_INIT(&GLOB(sessions));
