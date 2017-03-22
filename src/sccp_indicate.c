@@ -300,15 +300,15 @@ void __sccp_indicate(const sccp_device_t * const maybe_device, sccp_channel_t * 
 			break;
 		case SCCP_CHANNELSTATE_HOLD:
 			{
-				sccp_channel_closeAllMediaTransmitAndReceive(d, c);
-				/*
+				//sccp_channel_closeAllMediaTransmitAndReceive(d, c);
 				if (SCCP_RTP_STATUS_INACTIVE != c->rtp.audio.receiveChannelState) {
 					sccp_channel_closeReceiveChannel(c, TRUE);
 				}
 				if (SCCP_RTP_STATUS_INACTIVE != c->rtp.video.receiveChannelState) {
 					sccp_channel_closeMultiMediaReceiveChannel(c, TRUE);
 				}
-				*/
+				sccp_rtp_stop(c);
+				
 				if (d->session) {
 					sccp_handle_time_date_req(d->session, d, NULL);
 				}
