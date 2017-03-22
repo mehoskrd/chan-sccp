@@ -756,10 +756,9 @@ sccp_msg_t *sccp_utils_buildLineStatDynamicMessage(uint32_t lineInstance, uint32
  */
 gcc_inline boolean_t sccp_netsock_equals(const struct sockaddr_storage * const s0, const struct sockaddr_storage *const s1)
 {
-	if (s0->ss_family == s1->ss_family && sccp_netsock_cmp_addr(s0, s1) == 0 ) {
+	if ((s0->ss_family == s1->ss_family && sccp_netsock_cmp_addr(s0, s1) == 0) && sccp_netsock_cmp_port(s0, s1) == 0) {
 		return TRUE;
 	} 
-
 	return FALSE;
 }
 
