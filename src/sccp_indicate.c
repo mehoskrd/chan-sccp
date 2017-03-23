@@ -128,6 +128,7 @@ void __sccp_indicate(const sccp_device_t * const maybe_device, sccp_channel_t * 
 				sccp_dev_set_keyset(d, lineInstance, c->callid, KEYMODE_OFFHOOK);
 				sccp_dev_set_cplane(d, lineInstance, 1);
 				/* for earlyrtp take a look at sccp_channel_newcall because we have no c->owner here */
+				sccp_rtp_requestRTPPorts(d, c);
 			}
 			break;
 		case SCCP_CHANNELSTATE_DIALING:
@@ -138,6 +139,8 @@ void __sccp_indicate(const sccp_device_t * const maybe_device, sccp_channel_t * 
 				d->indicate->dialing(d, lineInstance, c->callid, c->calltype, ci, c->dialedNumber);
 				if (d->earlyrtp <= SCCP_EARLYRTP_RINGOUT && c->rtp.audio.receiveChannelState == SCCP_RTP_STATUS_INACTIVE) {
 					sccp_channel_openReceiveChannel(c);
+				} else {
+					sccp_rtp_requestRTPPorts(d, c);
 				}
 			}
 			break;

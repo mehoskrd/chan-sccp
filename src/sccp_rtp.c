@@ -293,15 +293,16 @@ void sccp_rtp_set_phone(constChannelPtr c, sccp_rtp_t * const rtp, struct sockad
 		memcpy(&rtp->phone, new_peer, sizeof(rtp->phone));
 		if (iPbx.rtp_setPhoneAddress && rtp->instance) {
 			iPbx.rtp_setPhoneAddress(rtp, new_peer, device->nat >= SCCP_NAT_ON ? 1 : 0);
+
+			sccp_copy_string(remoteIpStr, sccp_netsock_stringify(&rtp->phone_remote), sizeof(remoteIpStr));
+			sccp_copy_string(phoneIpStr, sccp_netsock_stringify(&rtp->phone), sizeof(phoneIpStr));
+			if (device->nat >= SCCP_NAT_ON) {
+				sccp_log(DEBUGCAT_RTP) (VERBOSE_PREFIX_3 "%s: Tell %s  to send RTP/UDP media from %s to %s (NAT:%s)\n", DEV_ID_LOG(device), device->directrtp ? "Peer" : "PBX ", remoteIpStr, phoneIpStr, peerIpStr);
+			} else {
+				sccp_log(DEBUGCAT_RTP) (VERBOSE_PREFIX_3 "%s: Tell %s  to send RTP/UDP media from %s to %s (NoNat)\n", DEV_ID_LOG(device), device->directrtp ? "Peer" : "PBX ", remoteIpStr, phoneIpStr);
+			}
 		}
 
-		sccp_copy_string(remoteIpStr, sccp_netsock_stringify(&rtp->phone_remote), sizeof(remoteIpStr));
-		sccp_copy_string(phoneIpStr, sccp_netsock_stringify(&rtp->phone), sizeof(phoneIpStr));
-		if (device->nat >= SCCP_NAT_ON) {
-			sccp_log(DEBUGCAT_RTP) (VERBOSE_PREFIX_3 "%s: Tell %s  to send RTP/UDP media from %s to %s (NAT:%s)\n", DEV_ID_LOG(device), device->directrtp ? "Peer" : "PBX ", remoteIpStr, phoneIpStr, peerIpStr);
-		} else {
-			sccp_log(DEBUGCAT_RTP) (VERBOSE_PREFIX_3 "%s: Tell %s  to send RTP/UDP media from %s to %s (NoNat)\n", DEV_ID_LOG(device), device->directrtp ? "Peer" : "PBX ", remoteIpStr, phoneIpStr);
-		}
 	}
 }
 
