@@ -1795,23 +1795,21 @@ static int sccp_wrapper_asterisk112_update_rtp_peer(PBX_CHANNEL_TYPE * ast, PBX_
 	//AUTO_RELEASE(sccp_channel_t, c , get_sccp_channel_from_pbx_channel(ast));				// not following the refcount rules... channel is already retained
 	sccp_channel_t *c = NULL;
 	int result = 0;
-
 	do {
-		char codec_buf[512] = "";
+		struct ast_str *codec_buf = ast_str_alloca(64);
 
 		if (!(c = CS_AST_CHANNEL_PVT(ast))) {
 			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "SCCP: (asterisk112_update_rtp_peer) NO PVT\n");
 			result = -1;
 			break;
 		}
+
 		if (!codecs) {
 			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) NO Codecs\n", c->currentDeviceId);
 			result = -1;
 			break;
 		}
-		ast_getformatname_multiple(codec_buf, sizeof(codec_buf) - 1, (struct ast_format_cap *) codecs);
-
-		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_2 "%s: (asterisk112_update_rtp_peer) stage: %s, remote codecs capabilty: %s (%lu), nat_active: %d\n", c->currentDeviceId, S_COR(AST_STATE_UP == pbx_channel_state(ast), "RTP", "EarlyRTP"), codec_buf, (long unsigned int) codecs, nat_active);
+		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_2 "%s: (asterisk112_update_rtp_peer) stage: %s, remote codecs capabilty: %s (%lu), nat_active: %d\n", c->currentDeviceId, S_COR(AST_STATE_UP == pbx_channel_state(ast), "RTP", "EarlyRTP"), ast_format_cap_get_names((struct ast_format_cap *) codecs, &codec_buf), (long unsigned int) codecs, nat_active);
 
 		if (!c->line) {
 			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) NO LINE\n", c->currentDeviceId);
@@ -1831,14 +1829,13 @@ static int sccp_wrapper_asterisk112_update_rtp_peer(PBX_CHANNEL_TYPE * ast, PBX_
 		}
 
 		if (!rtp && !vrtp && !trtp) {
-			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) RTP not ready yet\n", c->currentDeviceId);
+			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) RTP not ready\n", c->currentDeviceId);
 			result = 0;
 			break;
 		}
 
 		PBX_RTP_TYPE *instance = { 0, };
 		struct sockaddr_storage sas = { 0, };
-		//struct sockaddr_in sin = { 0, };
 		struct ast_sockaddr sin_tmp;
 		boolean_t directmedia = FALSE;
 
@@ -1846,39 +1843,65 @@ static int sccp_wrapper_asterisk112_update_rtp_peer(PBX_CHANNEL_TYPE * ast, PBX_
 			instance = rtp;
 		} else if (vrtp) {
 			instance = vrtp;
+#ifdef CS_SCCP_VIDEO			
+			/* video requested by remote side, let's see if we support video */ 
+ 			/* should be moved to sccp_rtp.c */
+/*
+			if (ast_format_cap_has_type(codecs, AST_MEDIA_TYPE_VIDEO) && sccp_device_isVideoSupported(d) && c->videomode == SCCP_VIDEO_MODE_AUTO) {
+				if (!c->rtp.video.instance && !sccp_rtp_createVideoServer(c)) {
+					sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_3 "%s: can not start vrtp\n", DEV_ID_LOG(d));
+				} else {
+					if (!c->rtp.video.mediaTransmissionState) {
+						sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_3 "%s: video rtp started\n", DEV_ID_LOG(d));
+						sccp_channel_startMultiMediaTransmission(c);
+					}
+				}
+			}
+*/
+#endif			
 		} else {
 			instance = trtp;
 		}
 
 		if (d->directrtp && d->nat < SCCP_NAT_ON && !nat_active && !c->conference) {			// asume directrtp
 			ast_rtp_instance_get_remote_address(instance, &sin_tmp);
-			memcpy(&sas, &sin_tmp, sizeof(struct sockaddr_storage));
-			//ast_sockaddr_to_sin(&sin_tmp, &sin);
-			if (d->nat == SCCP_NAT_OFF) {								// forced nat off to circumvent autodetection + direcrtp, requires checking both phone_ip and external session ip address against devices permit/deny
-				struct ast_sockaddr sin_local;
-				struct sockaddr_storage localsas = { 0, };
-				ast_rtp_instance_get_local_address(instance, &sin_local);
-				memcpy(&localsas, &sin_local, sizeof(struct sockaddr_storage));
-				if (sccp_apply_ha(d->ha, &sas) == AST_SENSE_ALLOW && sccp_apply_ha(d->ha, &localsas) == AST_SENSE_ALLOW) {
+			if (!ast_sockaddr_isnull(&sin_tmp)) {
+				memcpy(&sas, &sin_tmp, sizeof(struct sockaddr_storage));
+				if (d->nat == SCCP_NAT_OFF) {							// forced nat off to circumvent autodetection + direcrtp, requires checking both phone_ip and external session ip address against devices permit/deny
+					struct ast_sockaddr sin_local;
+					struct sockaddr_storage localsas = { 0, };
+					ast_rtp_instance_get_local_address(instance, &sin_local);
+					memcpy(&localsas, &sin_local, sizeof(struct sockaddr_storage));
+					if (sccp_apply_ha(d->ha, &sas) == AST_SENSE_ALLOW && sccp_apply_ha(d->ha, &localsas) == AST_SENSE_ALLOW) {
+						directmedia = TRUE;
+					}
+				} else if (sccp_apply_ha(d->ha, &sas) == AST_SENSE_ALLOW) {			// check remote sin against local device acl (to match netmask)
 					directmedia = TRUE;
+					// ast_channel_defer_dtmf(ast);
 				}
-			} else if (sccp_apply_ha(d->ha, &sas) == AST_SENSE_ALLOW) {					// check remote sin against local device acl (to match netmask)
-				directmedia = TRUE;
-				// ast_channel_defer_dtmf(ast);
+			} else {
+				sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) failed to get remote ip-address\n", c->currentDeviceId);
+				return -1;
 			}
 		}
 		if (!directmedia) {										// fallback to indirectrtp
+			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) falling back to indirect\n", c->currentDeviceId)
 			ast_rtp_instance_get_local_address(instance, &sin_tmp);
-			// ast_sockaddr_to_sin(&sin_tmp, &sin);
-			// sin.sin_addr.s_addr = sin.sin_addr.s_addr ? sin.sin_addr.s_addr : d->session->ourip.s_addr;
-			memcpy(&sas, &sin_tmp, sizeof(struct sockaddr_storage));
-			sccp_session_getOurIP(d->session, &sas, sccp_netsock_is_IPv4(&sas) ? AF_INET : AF_INET6);
+			if (!ast_sockaddr_isnull(&sin_tmp)) {
+				memcpy(&sas, &sin_tmp, sizeof(struct sockaddr_storage));
+				sccp_session_getOurIP(d->session, &sas, sccp_netsock_is_IPv4(&sas) ? AF_INET : AF_INET6);
+			} else {
+				sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) failed to get local ip-address\n", c->currentDeviceId);
+				return -1;
+			}
 		}
 
-		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) new remote rtp ip = '%s'\n (d->directrtp: %s && !d->nat: %s && !remote->nat_active: %s && d->acl_allow: %s) => directmedia=%s\n", c->currentDeviceId, sccp_netsock_stringify(&sas), S_COR(d->directrtp, "yes", "no"),
-					  sccp_nat2str(d->nat),
-					  S_COR(!nat_active, "yes", "no"), S_COR(directmedia, "yes", "no"), S_COR(directmedia, "yes", "no")
-		    );
+		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_1 "%s: (asterisk112_update_rtp_peer) new remote rtp ip = '%s'\n (d->directrtp: %s && !d->nat: %s && !remote->nat_active: %s && d->acl_allow: %s && !c->conference:%s) => directmedia=%s\n",
+			  c->currentDeviceId, sccp_netsock_stringify(&sas), S_COR(d->directrtp, "yes", "no"),
+			  sccp_nat2str(d->nat),
+			  S_COR(!nat_active, "yes", "no"), S_COR(directmedia, "yes", "no"), S_COR(directmedia, "yes", "no"),
+			  S_COR(!c->conference, "yes", "no")
+		);
 
 		if (rtp) {											// send peer info to phone
 			sccp_rtp_set_peer(c, &c->rtp.audio, &sas);
