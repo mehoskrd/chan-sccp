@@ -759,7 +759,7 @@ void sccp_channel_closeMultiMediaReceiveChannel(constChannelPtr channel, boolean
 		return;
 	}
 	// stop transmitting before closing receivechannel (\note maybe we should not be doing this here)
-	sccp_channel_stopMediaTransmission(channel, KeepPortOpen);
+	sccp_channel_stopMultiMediaTransmission(channel, KeepPortOpen);
 
 	sccp_rtp_t *video = (sccp_rtp_t *) &(channel->rtp.video);
 	if (video->receiveChannelState) {
@@ -1701,24 +1701,19 @@ int sccp_channel_resume(constDevicePtr device, channelPtr channel, boolean_t swa
 #endif
 #endif														// ASTERISK_VERSION_GROUP >= 111
 
-#ifdef CS_SCCP_CONFERENCE
-	if (channel->conference) {
-		sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Resume Conference on the channel %s\n", d->id, channel->designator);
-		sccp_conference_resume(channel->conference);
-		sccp_dev_set_keyset(d, instance, channel->callid, KEYMODE_CONNCONF);
-	} else
-#endif
-	{
-		if (channel->owner) {
-			iPbx.queue_control(channel->owner, AST_CONTROL_UNHOLD);
-		}
-	}
+	// moved AST_CONTROL_UNHOLD indication to openReceiveChannelAck/startMediaTransmissionAck */
+	// Once the recieveChannel is open (and has a new ip-address/port), it will unhold the remote side
+	// This serializes the correct events to happen in order for directrtp to work
+	channel->previousChannelState = SCCP_CHANNELSTATE_HOLD;
+	// setting previousChannelState so openReceiveAck will know what to do
 
 	//! \todo move this to openreceive- and startmediatransmission
 	sccp_channel_updateChannelCapability(channel);
 
+
 	channel->state = SCCP_CHANNELSTATE_HOLD;
 #ifdef CS_AST_CONTROL_SRCUPDATE
+	//! \todo should be moved to sccp_rtp_set_peer
 	iPbx.queue_control(channel->owner, AST_CONTROL_SRCUPDATE);						// notify changes e.g codec
 #endif
 	if (channel->conference) {

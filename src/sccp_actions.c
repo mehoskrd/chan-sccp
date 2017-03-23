@@ -1,4 +1,3 @@
-
 /*!
  * \file        sccp_actions.c
  * \brief       SCCP Actions Class
@@ -3369,7 +3368,7 @@ void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessag
 			return;
 		}
 
-		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_3 "%s: Starting Phone RTP/UDP Transmission (State: %s[%d])\n", d->id, sccp_channelstate2str(channel->state), channel->state);
+		sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_3 "%s: Starting Phone RTP/UDP Receive (State: %s[%d])\n", d->id, sccp_channelstate2str(channel->state), channel->state);
 		sccp_channel_setDevice(channel, d);
 		if (channel->rtp.audio.instance) {
 			sccp_rtp_set_phone(channel, &channel->rtp.audio, &sas);
@@ -3385,11 +3384,22 @@ void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessag
 			sccp_dev_stoptone(d, sccp_device_find_index_for_line(d, channel->line->name), channel->callid);
 			if (channel->calltype == SKINNY_CALLTYPE_INBOUND) {
 				iPbx.queue_control(channel->owner, AST_CONTROL_ANSWER);
-			} else {
+			} else if (pbx_channel_state(channel->owner) == AST_STATE_DOWN) {
 				/* 'PROD' the remote side to let them know we can receive inband signalling from this moment onwards -> inband signalling required */
 				iPbx.queue_control(channel->owner, -1);
 			}
-			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE) && ((channel->rtp.audio.receiveChannelState & SCCP_RTP_STATUS_ACTIVE) && (channel->rtp.audio.mediaTransmissionState & SCCP_RTP_STATUS_ACTIVE))) {
+			if (channel->previousChannelState == SCCP_CHANNELSTATE_HOLD) {
+				if (channel->conference) {
+					sccp_conference_resume(channel->conference);
+					sccp_dev_set_keyset(d, sccp_device_find_index_for_line(d, channel->line->name), channel->callid, KEYMODE_CONNCONF);
+				} else {
+					iPbx.queue_control(channel->owner, AST_CONTROL_UNHOLD);
+				}
+			}
+			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE)
+				&& (channel->rtp.audio.receiveChannelState & SCCP_RTP_STATUS_ACTIVE)
+				&& (channel->rtp.audio.mediaTransmissionState & SCCP_RTP_STATUS_ACTIVE)
+			) {
 				iPbx.set_callstate(channel, AST_STATE_UP);
 			}
 		} else {
@@ -3540,7 +3550,7 @@ void handle_startmediatransmission_ack(constSessionPtr s, devicePtr d, constMess
 	if (mediastatus) {
 		pbx_log(LOG_WARNING, "%s: Error while opening MediaTransmission. Ending call. '%s' (%d))\n", DEV_ID_LOG(d), skinny_mediastatus2str(mediastatus), mediastatus);
 		if (mediastatus == SKINNY_MEDIASTATUS_OutOfChannels || mediastatus == SKINNY_MEDIASTATUS_OutOfSockets) {
-			pbx_log(LOG_ERROR, "%s: (OpenReceiveChannelAck) Please Reset this Device. It ran out of Channels and/or Sockets\n", d->id);
+			pbx_log(LOG_ERROR, "%s: (StartMediaTranmissionACK) Please Reset this Device. It ran out of Channels and/or Sockets\n", d->id);
 		}
 		sccp_channel_closeAllMediaTransmitAndReceive(d, channel);
 		sccp_channel_endcall(channel);
@@ -3553,7 +3563,11 @@ void handle_startmediatransmission_ack(constSessionPtr s, devicePtr d, constMess
 			if (channel->calltype == SKINNY_CALLTYPE_INBOUND) {
 				iPbx.queue_control(channel->owner, AST_CONTROL_ANSWER);
 			}
-			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE) && ((channel->rtp.audio.receiveChannelState & SCCP_RTP_STATUS_ACTIVE) && (channel->rtp.audio.mediaTransmissionState & SCCP_RTP_STATUS_ACTIVE))) {
+
+			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE))
+				&& (channel->rtp.audio.receiveChannelState & SCCP_RTP_STATUS_ACTIVE)
+				&& (channel->rtp.audio.mediaTransmissionState & SCCP_RTP_STATUS_ACTIVE)
+			) {
 				iPbx.set_callstate(channel, AST_STATE_UP);
 			}
 			sccp_log((DEBUGCAT_RTP)) (VERBOSE_PREFIX_3 "%s: Got StartMediaTranmission ACK.  Status: '%s' (%d), Remote TCP/IP: '%s', CallId %u (%u), PassThruId: %u\n", DEV_ID_LOG(d), skinny_mediastatus2str(mediastatus), mediastatus, sccp_netsock_stringify(&sas), callReference, callReference1, passThruPartyId);
