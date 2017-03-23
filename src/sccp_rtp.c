@@ -282,7 +282,11 @@ void sccp_rtp_set_phone(constChannelPtr c, sccp_rtp_t * const rtp, struct sockad
 		char peerIpStr[NI_MAXHOST + NI_MAXSERV];
 		char remoteIpStr[NI_MAXHOST + NI_MAXSERV];
 		char phoneIpStr[NI_MAXHOST + NI_MAXSERV];
-		if (device->nat >= SCCP_NAT_ON || device->conference || c->conference) {
+		if (device->nat >= SCCP_NAT_ON
+#ifdef CS_SCCP_CONFERENCE
+			|| device->conference || c->conference
+#endif			
+		) {
 			/* Rewrite ip-addres to the outside source address using the phones connection (device->sin) */
 			sccp_copy_string(peerIpStr, sccp_netsock_stringify(new_peer), sizeof(peerIpStr));
 			uint16_t port = sccp_netsock_getPort(new_peer);
