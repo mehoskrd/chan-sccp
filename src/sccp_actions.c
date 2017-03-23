@@ -3313,7 +3313,7 @@ void handle_port_response(constSessionPtr s, devicePtr d, constMessagePtr msg_in
 				return;
 		}
 		
-		if (channel && !sccp_netsock_equals(&sas, &rtp->phone_remote)) {
+		if (channel && rtp && rtp->instance && !sccp_netsock_equals(&sas, &rtp->phone_remote)) {
 			sccp_rtp_set_phone(channel, rtp, &sas);
 		}
 	}

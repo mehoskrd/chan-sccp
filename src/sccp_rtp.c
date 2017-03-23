@@ -291,7 +291,7 @@ void sccp_rtp_set_phone(constChannelPtr c, sccp_rtp_t * const rtp, struct sockad
 		}
 
 		memcpy(&rtp->phone, new_peer, sizeof(rtp->phone));
-		if (iPbx.rtp_setPhoneAddress) {
+		if (iPbx.rtp_setPhoneAddress && rtp->instance) {
 			iPbx.rtp_setPhoneAddress(rtp, new_peer, device->nat >= SCCP_NAT_ON ? 1 : 0);
 		}
 
