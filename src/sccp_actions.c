@@ -3564,7 +3564,7 @@ void handle_startmediatransmission_ack(constSessionPtr s, devicePtr d, constMess
 				iPbx.queue_control(channel->owner, AST_CONTROL_ANSWER);
 			}
 
-			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE))
+			if ((channel->state == SCCP_CHANNELSTATE_CONNECTED || channel->state == SCCP_CHANNELSTATE_CONNECTEDCONFERENCE)
 				&& (channel->rtp.audio.receiveChannelState & SCCP_RTP_STATUS_ACTIVE)
 				&& (channel->rtp.audio.mediaTransmissionState & SCCP_RTP_STATUS_ACTIVE)
 			) {
