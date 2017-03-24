@@ -3389,10 +3389,13 @@ void handle_open_receive_channel_ack(constSessionPtr s, devicePtr d, constMessag
 				iPbx.queue_control(channel->owner, -1);
 			}
 			if (channel->previousChannelState == SCCP_CHANNELSTATE_HOLD) {
+#if CS_SCCP_CONFERENCE
 				if (channel->conference) {
 					sccp_conference_resume(channel->conference);
 					sccp_dev_set_keyset(d, sccp_device_find_index_for_line(d, channel->line->name), channel->callid, KEYMODE_CONNCONF);
-				} else {
+				} else 
+#endif
+				{
 					iPbx.queue_control(channel->owner, AST_CONTROL_UNHOLD);
 				}
 			}
