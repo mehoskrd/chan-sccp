@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS `sccpdevice` (
   `backgroundImage` varchar(255) DEFAULT NULL,
   `ringtone` varchar(255) DEFAULT NULL,
   `name` varchar(15) NOT NULL default '',
+  `dtmfmode` varchar(10) default 'outofband',
   PRIMARY KEY  (`name`)
 ) ENGINE=INNODB DEFAULT CHARSET=latin1;
 
